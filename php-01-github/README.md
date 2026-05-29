@@ -16,6 +16,16 @@ brew update
 brew install httpd php mariadb
 ```
 
+**Prerequisite: httpd.conf Settings**  
+Make any required updates to `/opt/homebrew/etc/httpd/httpd.conf` to set the DocumentRoot and Directory to the proper php application root folder.
+
+For example:
+```bash
+DocumentRoot "/Users/chuck/swdev/cps/oauth2forpeople/php-01-github"                                        
+<Directory "/Users/chuck/swdev/cps/oauth2forpeople/php-01-github">
+```
+
+
 **Start services manually when working**
 ```bash
 brew services start httpd
@@ -54,7 +64,7 @@ But I am setting the project location to:
 `/Users/chuck/swdev/cps/oauth2forpeople/php`
 
 And then configuring Apache with a virtual host that points to the project’s web root.  
-`DocumentRoot "/Users/chuck/swdev/cps/oauth2forpeople/php"`
+`DocumentRoot "/Users/chuck/swdev/cps/oauth2forpeople/php-00-name"`
 
 For modern Apache + PHP on macOS, I am using PHP-FPM rather than old-style embedded mod_php. The Apache config generally needs these modules enabled:
 
@@ -93,7 +103,13 @@ brew install composer
 composer require vlucas/phpdotenv
 ```
 
+### Start PHP Web App
 
+PHP is configured to run on port 8080.
+
+```bash
+http://localhost:8080
+```
 
 ### GitHub OAuth Server Setup and Access
 
