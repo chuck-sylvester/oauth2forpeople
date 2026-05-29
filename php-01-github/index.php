@@ -2,94 +2,69 @@
 
 # *****************************************************************
 # php/index.php
-#  
-# Shaking off the old PHP cobwebs... it's been a while.
+# *****************************************************************
+# GitHub OAuth demo entry point.
+#
+# This version keeps the application intentionally small, but makes the
+# request flow explicit:
+#   1. Bootstrap session/config/helpers.
+#   2. Handle actions that redirect before any HTML is rendered.
+#   3. Render the current view for the browser.
+#
+# That structure avoids "headers already sent" problems and makes the
+# redirect-back OAuth callback easier to reason about.
 # *****************************************************************
 
 session_start();
 
 require_once __DIR__ . '/vendor/autoload.php';
-include "./config.php";
-include "./helper.php";
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/helper.php';
 
-# HTML page setup
-webPageSetup();
-
-# Print a few debug messages
-echo '<div class="bg-yellow-50 leading-6 font-mono text-sm">';
-echo '<p><hr>';
-echo "GitHub App Name: &nbsp;&nbsp;" . htmlspecialchars(GITHUB_APP_NAME ?? '', ENT_QUOTES, 'UTF-8') . "<br>";
-echo "GitHub Client ID: &nbsp;" . htmlspecialchars(GITHUB_CLIENT_ID ?? '', ENT_QUOTES, 'UTF-8') . "<br>";
-echo "GitHub Auth URL:  &nbsp;&nbsp;" . htmlspecialchars(GITHUB_AUTHORIZE_URL ?? '', ENT_QUOTES, 'UTF-8') . "<br>";
-echo "App Homepage URL: &nbsp;" . htmlspecialchars(APP_HOMEPAGE_URL, ENT_QUOTES, 'UTF-8') . "<br>";
-echo '<hr></p></div><br>';
+$action = $_GET['action'] ?? NULL;
+$hasAuthCode = isset($_GET['code']);
 
 # -----------------------------------------------------------------
-# Set up the "Logged-In" and "Logged-Out" views
+# Redirect-producing actions
 # -----------------------------------------------------------------
+# Keep redirects before page output. Once HTML has been sent, PHP may
+# no longer be able to send Location headers reliably.
 
-if(isset($_SESSION['oauth_error'])) {
-  echo '<p>OAuth error: ' . htmlspecialchars($_SESSION['oauth_error'], ENT_QUOTES, 'UTF-8') . '</p>';
-  unset($_SESSION['oauth_error']);
-}
-
-# If session has an access token, user is already logged in
-if(!isset($_GET['action']) && !isset($_GET['code'])) {
-  if(!empty($_SESSION['access_token'])) {
-    echo '<h3 class="text-2xl py-4">Logged In</h3>';
-    echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="?action=repos">View Repos</a></p>';
-    echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="?action=logout">Logout</a></p>';
-  } else {
-    echo '<h3 class="text-2xl py-4">Not logged in</h3>';
-    echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="?action=login">Login</a></p>';
-  }
-  die();
-}
-
-# -----------------------------------------------------------------
-# Authorization Request
-# -----------------------------------------------------------------
-
-# Start by sending user to the GitHub Authorization page
-if(isset($_GET['action']) && $_GET['action'] == 'login') {
+if($action === 'login') {
   unset($_SESSION['access_token']);
 
-  # Generate a random hash and and store in the session
+  # Store a nonce in the session so the callback can prove it belongs
+  # to this browser-initiated authorization request.
   $_SESSION['state'] = bin2hex(random_bytes(16));
 
-  $params = array(
+  $params = [
     'response_type' => 'code',
     'client_id' => GITHUB_CLIENT_ID,
     'redirect_uri' => APP_HOMEPAGE_URL,
     'scope' => 'user public_repo',
     'state' => $_SESSION['state']
-  );
+  ];
 
-  # Redirect user to GitHub authorization page
   header('Location: ' . GITHUB_AUTHORIZE_URL . '?' . http_build_query($params));
   die();
 }
 
-# -----------------------------------------------------------------
-# Obtain Access Token
-# -----------------------------------------------------------------
-
-# After redirect back to this page, query string contains "code" and "state"
-if(isset($_GET['code'])) {
-  # Verify that state matches our stored state
+if($hasAuthCode) {
+  # GitHub redirects back here with code/state. The state check protects
+  # against callbacks that were not initiated by this session.
   if(!isset($_GET['state']) || !isset($_SESSION['state']) || !hash_equals($_SESSION['state'], $_GET['state'])) {
-    header('Location: ' . $appBaseURL . '?error=invalid_state');
+    $_SESSION['oauth_error'] = 'Invalid OAuth state. Please try logging in again.';
+    header('Location: ' . $appBaseURL);
     die();
   }
 
-  # Exchange auth code for an access token
-  $token = apiRequest(GITHUB_TOKEN_URL, array(
+  $token = apiRequest(GITHUB_TOKEN_URL, [
     'grant_type' => 'authorization_code',
     'client_id' => GITHUB_CLIENT_ID,
     'client_secret' => GITHUB_CLIENT_SECRET,
     'redirect_uri' => APP_HOMEPAGE_URL,
     'code' => $_GET['code']
-  ));
+  ]);
 
   if(empty($token['access_token'])) {
     $_SESSION['oauth_error'] = $token['error_description'] ?? $token['error'] ?? 'Unable to obtain an access token.';
@@ -104,31 +79,71 @@ if(isset($_GET['code'])) {
   die();
 }
 
-if(isset($_GET['action']) && $_GET['action'] == 'logout') {
+if($action === 'logout') {
   unset($_SESSION['access_token'], $_SESSION['state']);
   header('Location: ' . $appBaseURL);
   die();
 }
 
 # -----------------------------------------------------------------
-# Make API Request
+# Page rendering
 # -----------------------------------------------------------------
 
-if(isset($_GET['action']) && $_GET['action'] == 'repos') {
-  # Find all repos created by the authorized user
+webPageSetup();
+renderDebugConfig();
+
+if(isset($_SESSION['oauth_error'])) {
+  echo '<p class="text-red-800 py-2">OAuth error: ' . escapeHtml($_SESSION['oauth_error']) . '</p>';
+  unset($_SESSION['oauth_error']);
+}
+
+if($action === 'repos') {
+  if(empty($_SESSION['access_token'])) {
+    echo '<h3 class="text-2xl py-4">Not logged in</h3>';
+    echo '<p class="py-2">Please log in before viewing repositories.</p>';
+    echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="?action=login">Login</a></p>';
+    webPageClose();
+    die();
+  }
+
   $repos = apiRequest(GITHUB_API_BASE_URL . 'user/repos?' . http_build_query([
     'sort' => 'created',
     'direction' => 'desc'
   ]));
 
+  if(!is_array($repos) || isset($repos['error']) || isset($repos['message'])) {
+    $errorMessage = $repos['error_description'] ?? $repos['message'] ?? 'Unable to load repositories.';
+    echo '<h3 class="text-2xl py-4">My Public Repositories</h3>';
+    echo '<p class="text-red-800 py-2">' . escapeHtml($errorMessage) . '</p>';
+    echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="' . escapeHtml($appBaseURL) . '">Back</a></p>';
+    webPageClose();
+    die();
+  }
+
   echo '<h3 class="text-2xl py-4">My Public Repositories</h3>';
   echo '<ul>';
-  foreach($repos as $repo)
-    echo '<li><a target="_blank" class="text-blue-900 hover:text-red-900" href="' . htmlspecialchars($repo['html_url'], ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($repo['name'], ENT_QUOTES, 'UTF-8') . '</a></li>';
+  foreach($repos as $repo) {
+    if(!isset($repo['html_url'], $repo['name'])) {
+      continue;
+    }
+
+    echo '<li><a target="_blank" class="text-blue-900 hover:text-red-900" href="' . escapeHtml($repo['html_url']) . '">' . escapeHtml($repo['name']) . '</a></li>';
+  }
   echo '</ul><br>';
-  echo '<a href="/">← Back';
+  echo '<a class="text-blue-900 hover:text-red-900" href="' . escapeHtml($appBaseURL) . '">Back</a>';
+  webPageClose();
+  die();
 }
 
-echo '</body></head></html>';
+# Default home view. The only state needed here is whether the session
+# currently contains an access token.
+if(!empty($_SESSION['access_token'])) {
+  echo '<h3 class="text-2xl py-4">Logged In</h3>';
+  echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="?action=repos">View Repos</a></p>';
+  echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="?action=logout">Logout</a></p>';
+} else {
+  echo '<h3 class="text-2xl py-4">Not logged in</h3>';
+  echo '<p class="py-2"><a class="text-blue-900 hover:text-red-900" href="?action=login">Login</a></p>';
+}
 
-?>
+webPageClose();

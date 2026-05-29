@@ -12,3 +12,13 @@
 /vendor/
 vendor/
 .env
+env/
+venv
+.venv
+venv/
+.venv/
+
+# Python
+pycache/ *.pyc
+__pycache__/
+.cache/

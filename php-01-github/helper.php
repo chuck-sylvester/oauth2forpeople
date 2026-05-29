@@ -3,14 +3,21 @@
 # =================================================================
 # php/helper.php
 # =================================================================
-# Helper functions
+# Small rendering and HTTP helpers for the GitHub OAuth demo.
+#
+# The main script now handles request flow before rendering HTML. These
+# helpers keep repeated page/API details out of index.php while staying
+# intentionally lightweight for a single-file-style demo application.
 # =================================================================
 
-# Function to set up basic HTML page
+function escapeHtml($value) {
+  return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
+# Start the HTML document after all redirect-producing actions have run.
 function webPageSetup() {
   echo '<!DOCTYPE html>';
   echo '<html lang="en">';
-
   echo '<head>';
   echo '  <meta charset="UTF-8">';
   echo '  <meta name="viewport" content="width=device-width, initial-scale=1.0">';
@@ -23,27 +30,55 @@ function webPageSetup() {
   echo '<body class="p-4 m-12 bg-blue-50">';
 }
 
+function webPageClose() {
+  echo '</body></html>';
+}
 
-# Function to wrap cURL
+function renderDebugConfig() {
+  echo '<div class="bg-yellow-50 leading-6 font-mono text-sm p-2 border border-yellow-500 rounded">';
+  echo '<p><hr>';
+  echo 'GitHub App Name: &nbsp;&nbsp;' . escapeHtml(GITHUB_APP_NAME) . '<br>';
+  echo 'GitHub Client ID: &nbsp;' . escapeHtml(GITHUB_CLIENT_ID) . '<br>';
+  echo 'GitHub Auth URL:  &nbsp;&nbsp;' . escapeHtml(GITHUB_AUTHORIZE_URL) . '<br>';
+  echo 'App Homepage URL: &nbsp;' . escapeHtml(APP_HOMEPAGE_URL) . '<br>';
+  echo '<hr></p></div><br>';
+}
+
+# Wrap cURL for GitHub JSON requests and return a predictable result.
 function apiRequest($url, $post=FALSE, $headers=array()) {
-  global $appBaseURL; 
+  global $appBaseURL;
 
   $ch = curl_init($url);
   curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
 
-  if($post)
+  if($post) {
     curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($post));
+  }
 
   $requestHeaders = [
     'Accept: application/json',
     'User-Agent: ' . $appBaseURL
   ];
 
-  if(isset($_SESSION['access_token']))
+  if(!empty($_SESSION['access_token'])) {
     $requestHeaders[] = 'Authorization: Bearer ' . $_SESSION['access_token'];
+  }
 
   curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge($requestHeaders, $headers));
 
   $response = curl_exec($ch);
-  return json_decode($response, true);
+  if($response === FALSE) {
+    $error = curl_error($ch);
+    curl_close($ch);
+    return ['error' => 'curl_error', 'error_description' => $error];
+  }
+
+  curl_close($ch);
+
+  $decodedResponse = json_decode($response, TRUE);
+  if(json_last_error() !== JSON_ERROR_NONE) {
+    return ['error' => 'json_error', 'error_description' => json_last_error_msg()];
+  }
+
+  return $decodedResponse;
 }
